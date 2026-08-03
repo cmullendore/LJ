@@ -10,18 +10,18 @@ public partial class MainPage : ContentPage
     private static readonly ILogger Logger = Log.ForContext<MainPage>();
     private readonly LiveJournalClient liveJournalClient;
     private readonly JournalExportService exportService;
-    private readonly ScrapbookClient scrapbookClient;
+    private readonly LiveJournalPhotosClient liveJournalPhotosClient;
     private readonly ObservableCollection<JournalEntry> entries = [];
-    private readonly ObservableCollection<ScrapbookAlbum> albums = [];
+    private readonly ObservableCollection<LiveJournalPhotosAlbum> albums = [];
     private LiveJournalSession? session;
     private bool updatingSelection;
 
-    public MainPage(LiveJournalClient liveJournalClient, JournalExportService exportService, ScrapbookClient scrapbookClient)
+    public MainPage(LiveJournalClient liveJournalClient, JournalExportService exportService, LiveJournalPhotosClient liveJournalPhotosClient)
     {
         InitializeComponent();
         this.liveJournalClient = liveJournalClient;
         this.exportService = exportService;
-        this.scrapbookClient = scrapbookClient;
+        this.liveJournalPhotosClient = liveJournalPhotosClient;
         EntriesView.ItemsSource = entries;
         AlbumsView.ItemsSource = albums;
     }
@@ -53,21 +53,21 @@ public partial class MainPage : ContentPage
         });
     }
 
-    private async void OnScanScrapbookClicked(object? sender, EventArgs e)
+    private async void OnScanPhotosClicked(object? sender, EventArgs e)
     {
         if (!HasCredentials())
         {
-            Logger.Warning("ScrapBook scan was requested without complete credentials");
+            Logger.Warning("LiveJournal Photos scan was requested without complete credentials");
             await DisplayAlertAsync("Credentials required", "Enter your LiveJournal username and password.", "OK");
             return;
         }
 
         var username = UsernameEntry.Text!.Trim();
-        Logger.Information("ScrapBook scan requested for {Username}", username);
-        await RunOperationAsync("ScrapBook scan", async (progress, token) =>
+        Logger.Information("LiveJournal Photos scan requested for {Username}", username);
+        await RunOperationAsync("LiveJournal Photos scan", async (progress, token) =>
         {
             session = await liveJournalClient.AuthenticateAsync(username, PasswordEntry.Text!, token);
-            var scannedAlbums = await scrapbookClient.GetAlbumsAsync(session, progress, token);
+            var scannedAlbums = await liveJournalPhotosClient.GetAlbumsAsync(session, progress, token);
             albums.Clear();
             foreach (var album in scannedAlbums)
             {
@@ -75,7 +75,7 @@ public partial class MainPage : ContentPage
             }
 
             SelectAllAlbumsCheckBox.IsChecked = false;
-            StatusLabel.Text = $"Found {albums.Count} ScrapBook albums.";
+            StatusLabel.Text = $"Found {albums.Count} LiveJournal Photos albums.";
             UpdatePhotoExportButton();
         });
     }
@@ -113,34 +113,23 @@ public partial class MainPage : ContentPage
             return;
         }
 
-        var hasAlbums = albums.Any(album => album.IsSelected);
-        var hasEntries = entries.Any(entry => entry.IsSelected);
-        if (!hasAlbums && !hasEntries)
+        if (!albums.Any(album => album.IsSelected))
         {
-            Logger.Warning("Photo export was requested with no selected albums or entries");
-            await DisplayAlertAsync("Nothing selected", "Select ScrapBook albums or journal entries with embedded photos.", "OK");
+            Logger.Warning("LiveJournal Photos export was requested with no selected albums");
+            await DisplayAlertAsync("No albums selected", "Select at least one LiveJournal Photos album to export.", "OK");
             return;
         }
 
-        Logger.Information("Photo export requested to {ExportDirectory} for albums: {HasAlbums}, journal entries: {HasEntries}", DirectoryEntry.Text.Trim(), hasAlbums, hasEntries);
-        await RunOperationAsync("Photo export", async (progress, token) =>
+        Logger.Information("LiveJournal Photos export requested to {ExportDirectory}", DirectoryEntry.Text.Trim());
+        await RunOperationAsync("LiveJournal Photos export", async (progress, token) =>
         {
-            if (hasAlbums)
+            if (session is null)
             {
-                if (session is null)
-                {
-                    session = await liveJournalClient.AuthenticateAsync(UsernameEntry.Text!.Trim(), PasswordEntry.Text!, token);
-                }
-
-                await scrapbookClient.ExportAlbumsAsync(albums, DirectoryEntry.Text.Trim(), session, progress, token);
+                session = await liveJournalClient.AuthenticateAsync(UsernameEntry.Text!.Trim(), PasswordEntry.Text!, token);
             }
 
-            if (hasEntries)
-            {
-                await exportService.ExportEmbeddedPhotosAsync(entries, DirectoryEntry.Text.Trim(), progress, token);
-            }
-
-            StatusLabel.Text = "Photo export complete.";
+            await liveJournalPhotosClient.ExportAlbumsAsync(albums, DirectoryEntry.Text.Trim(), session, progress, token);
+            StatusLabel.Text = "LiveJournal Photos export complete.";
         });
     }
 
@@ -233,7 +222,7 @@ public partial class MainPage : ContentPage
     private void SetOperationControls(bool isEnabled)
     {
         ScanButton.IsEnabled = isEnabled;
-        ScanScrapbookButton.IsEnabled = isEnabled;
+        ScanPhotosButton.IsEnabled = isEnabled;
         BrowseButton.IsEnabled = isEnabled;
         UsernameEntry.IsEnabled = isEnabled;
         PasswordEntry.IsEnabled = isEnabled;
@@ -250,5 +239,5 @@ public partial class MainPage : ContentPage
 
     private void UpdateExportButton() => ExportButton.IsEnabled = ScanButton.IsEnabled && entries.Any(entry => entry.IsSelected);
 
-    private void UpdatePhotoExportButton() => ExportPhotosButton.IsEnabled = ScanButton.IsEnabled && (albums.Any(album => album.IsSelected) || entries.Any(entry => entry.IsSelected));
+    private void UpdatePhotoExportButton() => ExportPhotosButton.IsEnabled = ScanButton.IsEnabled && albums.Any(album => album.IsSelected);
 }

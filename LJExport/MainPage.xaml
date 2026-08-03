@@ -20,7 +20,7 @@
             <Entry x:Name="UsernameEntry" Grid.Row="0" Grid.Column="0" Placeholder="LiveJournal username" />
             <Entry x:Name="PasswordEntry" Grid.Row="0" Grid.Column="1" Placeholder="Password" IsPassword="True" />
             <Button x:Name="ScanButton" Grid.Row="0" Grid.Column="2" Text="Scan journal" Clicked="OnScanClicked" />
-            <Button x:Name="ScanScrapbookButton" Grid.Row="0" Grid.Column="3" Text="Scan ScrapBook" Clicked="OnScanScrapbookClicked" />
+            <Button x:Name="ScanPhotosButton" Grid.Row="0" Grid.Column="3" Text="Scan Photos" Clicked="OnScanPhotosClicked" />
             <Entry x:Name="DirectoryEntry" Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Placeholder="Export directory" />
             <Button x:Name="BrowseButton" Grid.Row="1" Grid.Column="3" Text="Choose folder" Clicked="OnBrowseClicked" />
         </Grid>
@@ -54,13 +54,13 @@
 
             <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
                 <CheckBox x:Name="SelectAllAlbumsCheckBox" VerticalOptions="Center" CheckedChanged="OnSelectAllAlbumsCheckedChanged" />
-                <Label Grid.Column="1" Text="All ScrapBook albums" VerticalOptions="Center" />
-                <Button x:Name="ExportPhotosButton" Grid.Column="2" Text="Export selected photos" Clicked="OnExportPhotosClicked" IsEnabled="False" />
+                <Label Grid.Column="1" Text="All LiveJournal Photos albums" VerticalOptions="Center" />
+                <Button x:Name="ExportPhotosButton" Grid.Column="2" Text="Export selected albums" Clicked="OnExportPhotosClicked" IsEnabled="False" />
             </Grid>
 
             <CollectionView x:Name="AlbumsView" Grid.Row="3" SelectionMode="None">
                 <CollectionView.EmptyView>
-                    <Label Text="Scan ScrapBook to list photo albums." HorizontalOptions="Center" VerticalOptions="Center" />
+                    <Label Text="Scan LiveJournal Photos to list photo albums." HorizontalOptions="Center" VerticalOptions="Center" />
                 </CollectionView.EmptyView>
                 <CollectionView.ItemTemplate>
                     <DataTemplate>

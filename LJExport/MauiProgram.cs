@@ -38,7 +38,7 @@ namespace LJExport
             });
             builder.Services.AddSingleton(services => new Services.LiveJournalClient(services.GetRequiredService<HttpClient>()));
             builder.Services.AddSingleton(services => new Services.JournalExportService(services.GetRequiredService<HttpClient>()));
-            builder.Services.AddSingleton(services => new Services.ScrapbookClient(services.GetRequiredService<HttpClient>()));
+            builder.Services.AddSingleton(services => new Services.LiveJournalPhotosClient(services.GetRequiredService<HttpClient>()));
             builder.Services.AddTransient<MainPage>();
             builder.Services.AddTransient<AppShell>();
 

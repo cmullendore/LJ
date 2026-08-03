@@ -2,7 +2,7 @@ using System.ComponentModel;
 
 namespace LJExport.Models;
 
-public sealed class ScrapbookAlbum : INotifyPropertyChanged
+public sealed class LiveJournalPhotosAlbum : INotifyPropertyChanged
 {
     private bool isSelected;
 
@@ -10,7 +10,7 @@ public sealed class ScrapbookAlbum : INotifyPropertyChanged
 
     public Uri Url { get; init; } = null!;
 
-    public IReadOnlyList<ScrapbookPhoto> Photos { get; init; } = [];
+    public IReadOnlyList<LiveJournalPhoto> Photos { get; init; } = [];
 
     public bool IsSelected
     {
@@ -30,4 +30,4 @@ public sealed class ScrapbookAlbum : INotifyPropertyChanged
     public event PropertyChangedEventHandler? PropertyChanged;
 }
 
-public sealed record ScrapbookPhoto(Uri OriginalUri, string FileName);
+public sealed record LiveJournalPhoto(Uri OriginalUri, string FileName);
