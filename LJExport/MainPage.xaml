@@ -3,6 +3,13 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              x:Class="LJExport.MainPage"
              Title="LiveJournal Export">
+    <ContentPage.Resources>
+        <Style x:Key="Headline" TargetType="Label">
+            <Setter Property="FontSize" Value="24" />
+            <Setter Property="FontAttributes" Value="Bold" />
+        </Style>
+    </ContentPage.Resources>
+
     <Grid Padding="32" RowDefinitions="Auto,Auto,*,Auto" RowSpacing="18" MaximumWidthRequest="1200">
         <VerticalStackLayout Spacing="6">
             <Label Text="LiveJournal Export" Style="{StaticResource Headline}" />

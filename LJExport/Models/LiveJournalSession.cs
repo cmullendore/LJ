@@ -1,3 +1,3 @@
 namespace LJExport.Models;
 
-public sealed record LiveJournalSession(string Username, string SessionId);
+public sealed record LiveJournalSession(string Username, string Password, string? SessionId);

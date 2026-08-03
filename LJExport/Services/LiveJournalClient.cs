@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
 using LJExport.Models;
+using Serilog;
 
 namespace LJExport.Services;
 
@@ -9,6 +10,7 @@ public sealed class LiveJournalClient(HttpClient httpClient)
 {
     private const string Endpoint = "https://www.livejournal.com/interface/flat";
     private const int MaxConcurrentRequests = 6;
+    private static readonly ILogger Logger = Log.ForContext<LiveJournalClient>();
 
     public async Task<IReadOnlyList<JournalEntry>> GetAllEntriesAsync(
         string username,
@@ -16,20 +18,21 @@ public sealed class LiveJournalClient(HttpClient httpClient)
         IProgress<OperationProgress>? progress,
         CancellationToken cancellationToken)
     {
+        Logger.Information("Starting journal scan for {Username}", username);
         var session = await AuthenticateAsync(username, password, cancellationToken);
         progress?.Report(new OperationProgress("Scanning journal entry metadata…", 0, 0));
 
         var metadata = await SendAsync(new Dictionary<string, string>
         {
             ["mode"] = "syncitems",
-            ["lastsync"] = "0",
-            ["auth_method"] = "session",
-            ["ljsession"] = session.SessionId
-        }, cancellationToken);
+            ["lastsync"] = "0"
+        }, session, cancellationToken);
 
         var items = ParseItems(metadata);
+        Logger.Information("Journal metadata scan for {Username} found {EntryCount} entries", username, items.Count);
         if (items.Count == 0)
         {
+            Logger.Information("Journal scan for {Username} completed with no entries", username);
             return [];
         }
 
@@ -43,21 +46,23 @@ public sealed class LiveJournalClient(HttpClient httpClient)
             CancellationToken = cancellationToken
         }, async (item, token) =>
         {
+            Logger.Debug("Downloading journal entry {ItemId} for {Username}", item.ItemId, username);
             var response = await SendAsync(new Dictionary<string, string>
             {
                 ["mode"] = "getevents",
                 ["selecttype"] = "one",
-                ["itemid"] = item.ItemId.ToString(CultureInfo.InvariantCulture),
-                ["auth_method"] = "session",
-                ["ljsession"] = session.SessionId
-            }, token);
+                ["itemid"] = item.ItemId.ToString(CultureInfo.InvariantCulture)
+            }, session, token);
 
             entries.Add(ParseEntry(response, item));
             var current = Interlocked.Increment(ref completed);
+            Logger.Debug("Downloaded journal entry {ItemId} for {Username}; completed {CompletedCount} of {TotalCount}", item.ItemId, username, current, items.Count);
             progress?.Report(new OperationProgress("Downloading journal entries…", current, items.Count));
         });
 
-        return entries.OrderByDescending(entry => entry.EventTime).ToList();
+        var result = entries.OrderByDescending(entry => entry.EventTime).ToList();
+        Logger.Information("Journal scan for {Username} completed with {EntryCount} entries", username, result.Count);
+        return result;
     }
 
     public async Task<LiveJournalSession> AuthenticateAsync(
@@ -65,36 +70,85 @@ public sealed class LiveJournalClient(HttpClient httpClient)
         string password,
         CancellationToken cancellationToken)
     {
-        var response = await SendAsync(new Dictionary<string, string>
-        {
-            ["mode"] = "login",
-            ["auth_method"] = "clear",
-            ["user"] = username,
-            ["password"] = password,
-            ["ver"] = "1",
-            ["clientversion"] = "LJExport/1.0"
-        }, cancellationToken);
+        Logger.Information("Starting LiveJournal login for {Username}", username);
+        Logger.Debug("Submitting LiveJournal login request for {Username} using clear authentication", username);
 
-        if (!response.TryGetValue("ljsession", out var session) || string.IsNullOrWhiteSpace(session))
+        Dictionary<string, string> response;
+        try
         {
-            throw new InvalidOperationException("LiveJournal did not return a session. Check the account credentials.");
+            response = await SendAsync(new Dictionary<string, string>
+            {
+                ["mode"] = "login",
+                ["auth_method"] = "clear",
+                ["user"] = username,
+                ["password"] = password,
+                ["ver"] = "1",
+                ["clientversion"] = "LJExport/1.0"
+            }, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            Logger.Warning(exception, "LiveJournal login request failed for {Username}", username);
+            throw;
         }
 
-        return new LiveJournalSession(username, session);
+        response.TryGetValue("ljsession", out var session);
+        if (string.IsNullOrWhiteSpace(session))
+        {
+            Logger.Information("LiveJournal login completed for {Username} without a session; subsequent Flat API requests will use clear authentication", username);
+            return new LiveJournalSession(username, password, null);
+        }
+
+        Logger.Information("LiveJournal login completed for {Username}", username);
+        return new LiveJournalSession(username, password, session);
+    }
+
+    private Task<Dictionary<string, string>> SendAsync(
+        Dictionary<string, string> parameters,
+        LiveJournalSession session,
+        CancellationToken cancellationToken)
+    {
+        return SendAsync(WithAuthentication(parameters, session), cancellationToken);
+    }
+
+    private Dictionary<string, string> WithAuthentication(
+        Dictionary<string, string> parameters,
+        LiveJournalSession session)
+    {
+        if (!string.IsNullOrWhiteSpace(session.SessionId))
+        {
+            parameters["auth_method"] = "session";
+            parameters["ljsession"] = session.SessionId;
+        }
+        else
+        {
+            parameters["auth_method"] = "clear";
+            parameters["user"] = session.Username;
+            parameters["password"] = session.Password;
+        }
+
+        return parameters;
     }
 
     private async Task<Dictionary<string, string>> SendAsync(
         Dictionary<string, string> parameters,
         CancellationToken cancellationToken)
     {
+        var mode = parameters.GetValueOrDefault("mode") ?? "unknown";
+        Logger.Debug("Sending LiveJournal API request with mode {Mode}", mode);
         using var content = new FormUrlEncodedContent(parameters);
         using var response = await httpClient.PostAsync(Endpoint, content, cancellationToken);
+        Logger.Debug("LiveJournal API request with mode {Mode} returned HTTP {StatusCode}", mode, (int)response.StatusCode);
         response.EnsureSuccessStatusCode();
 
-        var data = ParseFlatResponse(await response.Content.ReadAsStringAsync(cancellationToken));
+        var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+        Logger.Debug("LiveJournal API response for mode {Mode} contained {ResponseLength} characters", mode, responseContent.Length);
+        var data = ParseFlatResponse(responseContent);
+        Logger.Debug("Parsed LiveJournal API response for mode {Mode} into {ValueCount} values", mode, data.Count);
         if (data.TryGetValue("success", out var success) && success == "FAIL")
         {
             data.TryGetValue("errmsg", out var errorMessage);
+            Logger.Warning("LiveJournal API request with mode {Mode} was rejected", mode);
             throw new InvalidOperationException(errorMessage ?? "LiveJournal rejected the request.");
         }
 
@@ -117,17 +171,18 @@ public sealed class LiveJournalClient(HttpClient httpClient)
     private static List<JournalEntry> ParseItems(IReadOnlyDictionary<string, string> data)
     {
         return data
-            .Where(pair => pair.Key.EndsWith("itemid", StringComparison.OrdinalIgnoreCase))
-            .Select(pair => long.TryParse(pair.Value, CultureInfo.InvariantCulture, out var itemId)
-                ? new { Prefix = pair.Key[..^"itemid".Length], ItemId = itemId }
+            .Where(pair => pair.Key.EndsWith("_item", StringComparison.OrdinalIgnoreCase))
+            .Select(pair => pair.Value.StartsWith("L-", StringComparison.OrdinalIgnoreCase)
+                            && long.TryParse(pair.Value.AsSpan(2), CultureInfo.InvariantCulture, out var itemId)
+                ? new { Prefix = pair.Key[..^"item".Length], ItemId = itemId }
                 : null)
             .Where(item => item is not null)
             .Select(item => new JournalEntry
             {
                 ItemId = item!.ItemId,
                 EventTime = TryGetEventTime(data, item.Prefix),
-                Subject = data.GetValueOrDefault($"{item.Prefix}subject") ?? string.Empty,
-                Poster = data.GetValueOrDefault($"{item.Prefix}poster") ?? string.Empty
+                Subject = string.Empty,
+                Poster = string.Empty
             })
             .GroupBy(entry => entry.ItemId)
             .Select(group => group.First())
@@ -154,7 +209,8 @@ public sealed class LiveJournalClient(HttpClient httpClient)
         string prefix,
         DateTimeOffset? fallback = null)
     {
-        var eventTime = data.GetValueOrDefault($"{prefix}eventtime");
+        var eventTime = data.GetValueOrDefault($"{prefix}eventtime")
+            ?? data.GetValueOrDefault($"{prefix}time");
         return DateTimeOffset.TryParse(eventTime, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var parsed)
             ? parsed
             : fallback ?? DateTimeOffset.MinValue;

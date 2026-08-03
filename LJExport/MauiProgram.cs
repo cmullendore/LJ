@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.Logging;
+using Serilog;
 
 namespace LJExport
 {
@@ -6,6 +7,17 @@ namespace LJExport
     {
         public static MauiApp CreateMauiApp()
         {
+            var logDirectory = Path.Combine(FileSystem.AppDataDirectory, "Logs");
+            Directory.CreateDirectory(logDirectory);
+            var logFilePath = Path.Combine(logDirectory, $"LJExport-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffffffZ}.log");
+            Log.Logger = new LoggerConfiguration()
+                .MinimumLevel.Debug()
+                .Enrich.FromLogContext()
+                .WriteTo.Console()
+                .WriteTo.File(logFilePath, shared: true)
+                .CreateLogger();
+            Log.Information("Serilog initialized. File log: {LogFilePath}", logFilePath);
+
             var builder = MauiApp.CreateBuilder();
             builder
                 .UseMauiApp<App>()

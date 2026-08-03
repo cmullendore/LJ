@@ -1,11 +1,13 @@
 using System.Collections.ObjectModel;
 using LJExport.Models;
 using LJExport.Services;
+using Serilog;
 
 namespace LJExport;
 
 public partial class MainPage : ContentPage
 {
+    private static readonly ILogger Logger = Log.ForContext<MainPage>();
     private readonly LiveJournalClient liveJournalClient;
     private readonly JournalExportService exportService;
     private readonly ScrapbookClient scrapbookClient;
@@ -28,13 +30,16 @@ public partial class MainPage : ContentPage
     {
         if (!HasCredentials())
         {
+            Logger.Warning("Journal scan was requested without complete credentials");
             await DisplayAlertAsync("Credentials required", "Enter your LiveJournal username and password.", "OK");
             return;
         }
 
-        await RunOperationAsync(async (progress, token) =>
+        var username = UsernameEntry.Text!.Trim();
+        Logger.Information("Journal scan requested for {Username}", username);
+        await RunOperationAsync("Journal scan", async (progress, token) =>
         {
-            var scannedEntries = await liveJournalClient.GetAllEntriesAsync(UsernameEntry.Text!.Trim(), PasswordEntry.Text!, progress, token);
+            var scannedEntries = await liveJournalClient.GetAllEntriesAsync(username, PasswordEntry.Text!, progress, token);
             entries.Clear();
             foreach (var entry in scannedEntries)
             {
@@ -52,13 +57,16 @@ public partial class MainPage : ContentPage
     {
         if (!HasCredentials())
         {
+            Logger.Warning("ScrapBook scan was requested without complete credentials");
             await DisplayAlertAsync("Credentials required", "Enter your LiveJournal username and password.", "OK");
             return;
         }
 
-        await RunOperationAsync(async (progress, token) =>
+        var username = UsernameEntry.Text!.Trim();
+        Logger.Information("ScrapBook scan requested for {Username}", username);
+        await RunOperationAsync("ScrapBook scan", async (progress, token) =>
         {
-            session = await liveJournalClient.AuthenticateAsync(UsernameEntry.Text!.Trim(), PasswordEntry.Text!, token);
+            session = await liveJournalClient.AuthenticateAsync(username, PasswordEntry.Text!, token);
             var scannedAlbums = await scrapbookClient.GetAlbumsAsync(session, progress, token);
             albums.Clear();
             foreach (var album in scannedAlbums)
@@ -76,17 +84,20 @@ public partial class MainPage : ContentPage
     {
         if (string.IsNullOrWhiteSpace(DirectoryEntry.Text))
         {
+            Logger.Warning("Journal export was requested without an export directory");
             await DisplayAlertAsync("Export directory required", "Choose a directory for the exported files.", "OK");
             return;
         }
 
         if (!entries.Any(entry => entry.IsSelected))
         {
+            Logger.Warning("Journal export was requested with no selected entries");
             await DisplayAlertAsync("No entries selected", "Select at least one entry to export.", "OK");
             return;
         }
 
-        await RunOperationAsync(async (progress, token) =>
+        Logger.Information("Journal export requested to {ExportDirectory}", DirectoryEntry.Text.Trim());
+        await RunOperationAsync("Journal export", async (progress, token) =>
         {
             await exportService.ExportAsync(entries, DirectoryEntry.Text.Trim(), JsonRadioButton.IsChecked ? ExportFormat.Json : ExportFormat.Xml, progress, token);
             StatusLabel.Text = "Export complete.";
@@ -97,6 +108,7 @@ public partial class MainPage : ContentPage
     {
         if (string.IsNullOrWhiteSpace(DirectoryEntry.Text))
         {
+            Logger.Warning("Photo export was requested without an export directory");
             await DisplayAlertAsync("Export directory required", "Choose a directory for the exported photos.", "OK");
             return;
         }
@@ -105,11 +117,13 @@ public partial class MainPage : ContentPage
         var hasEntries = entries.Any(entry => entry.IsSelected);
         if (!hasAlbums && !hasEntries)
         {
+            Logger.Warning("Photo export was requested with no selected albums or entries");
             await DisplayAlertAsync("Nothing selected", "Select ScrapBook albums or journal entries with embedded photos.", "OK");
             return;
         }
 
-        await RunOperationAsync(async (progress, token) =>
+        Logger.Information("Photo export requested to {ExportDirectory} for albums: {HasAlbums}, journal entries: {HasEntries}", DirectoryEntry.Text.Trim(), hasAlbums, hasEntries);
+        await RunOperationAsync("Photo export", async (progress, token) =>
         {
             if (hasAlbums)
             {
@@ -141,6 +155,7 @@ public partial class MainPage : ContentPage
         if (folder is not null)
         {
             DirectoryEntry.Text = folder.Path;
+            Logger.Information("Export directory selected: {ExportDirectory}", folder.Path);
         }
 #else
         DirectoryEntry.Text = await DisplayPromptAsync("Export directory", "Enter a writable directory path.", initialValue: DirectoryEntry.Text);
@@ -185,16 +200,19 @@ public partial class MainPage : ContentPage
         UpdatePhotoExportButton();
     }
 
-    private async Task RunOperationAsync(Func<IProgress<OperationProgress>, CancellationToken, Task> operation)
+    private async Task RunOperationAsync(string operationName, Func<IProgress<OperationProgress>, CancellationToken, Task> operation)
     {
+        Logger.Information("{OperationName} started", operationName);
         SetOperationControls(false);
         var progress = new Progress<OperationProgress>(UpdateProgress);
         try
         {
             await operation(progress, CancellationToken.None);
+            Logger.Information("{OperationName} completed", operationName);
         }
         catch (Exception exception)
         {
+            Logger.Error(exception, "{OperationName} failed", operationName);
             StatusLabel.Text = "Operation failed.";
             await DisplayAlertAsync("LiveJournal Export", exception.Message, "OK");
         }

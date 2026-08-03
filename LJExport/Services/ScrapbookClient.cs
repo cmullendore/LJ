@@ -2,12 +2,14 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text.RegularExpressions;
 using LJExport.Models;
+using Serilog;
 
 namespace LJExport.Services;
 
 public sealed class ScrapbookClient(HttpClient httpClient)
 {
     private const int MaxConcurrentRequests = 6;
+    private static readonly ILogger Logger = Log.ForContext<ScrapbookClient>();
     private static readonly Regex AnchorRegex = new("<a\\b[^>]*?href=[\"'](?<url>[^\"']+)[\"'][^>]*>(?<content>.*?)</a>", RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
     private static readonly Regex ImageRegex = new("<img\\b[^>]*?src=[\"'](?<url>[^\"']+)[\"']", RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
     private static readonly Regex TagRegex = new("<[^>]+>", RegexOptions.Compiled);
@@ -17,13 +19,16 @@ public sealed class ScrapbookClient(HttpClient httpClient)
         IProgress<OperationProgress>? progress,
         CancellationToken cancellationToken)
     {
+        Logger.Information("Starting ScrapBook album scan for {Username}", session.Username);
         progress?.Report(new OperationProgress("Scanning ScrapBook albums…", 0, 0));
         var root = new Uri($"https://pics.livejournal.com/{Uri.EscapeDataString(session.Username)}/");
         var rootHtml = await GetPageAsync(root, session, cancellationToken);
         var albumLinks = ExtractAlbumLinks(rootHtml, root);
+        Logger.Debug("ScrapBook root scan for {Username} found {AlbumLinkCount} album links", session.Username, albumLinks.Count);
 
         if (albumLinks.Count == 0)
         {
+            Logger.Information("No ScrapBook album links found for {Username}; scanning the root as a single album", session.Username);
             albumLinks.Add(("ScrapBook", root));
         }
 
@@ -37,8 +42,10 @@ public sealed class ScrapbookClient(HttpClient httpClient)
             CancellationToken = cancellationToken
         }, async (album, token) =>
         {
+            Logger.Debug("Scanning ScrapBook album {AlbumName} at {AlbumUrl}", album.Name, album.Url);
             var html = await GetPageAsync(album.Url, session, token);
             var photos = ExtractPhotoLinks(html, album.Url);
+            Logger.Debug("ScrapBook album {AlbumName} contains {PhotoCount} photos", album.Name, photos.Count);
             albums.Add(new ScrapbookAlbum
             {
                 Name = album.Name,
@@ -48,7 +55,9 @@ public sealed class ScrapbookClient(HttpClient httpClient)
             progress?.Report(new OperationProgress("Scanning ScrapBook albums…", Interlocked.Increment(ref completed), albumLinks.Count));
         });
 
-        return albums.OrderBy(album => album.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+        var result = albums.OrderBy(album => album.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+        Logger.Information("ScrapBook album scan for {Username} completed with {AlbumCount} albums", session.Username, result.Count);
+        return result;
     }
 
     public async Task ExportAlbumsAsync(
@@ -62,6 +71,7 @@ public sealed class ScrapbookClient(HttpClient httpClient)
             .Where(album => album.IsSelected)
             .SelectMany(album => album.Photos.Select(photo => (Album: album, Photo: photo)))
             .ToList();
+        Logger.Information("Starting ScrapBook photo export to {ExportDirectory} with {PhotoCount} selected photos", exportDirectory, selectedPhotos.Count);
         var completed = 0;
         progress?.Report(new OperationProgress("Exporting ScrapBook photos…", 0, selectedPhotos.Count));
 
@@ -73,25 +83,36 @@ public sealed class ScrapbookClient(HttpClient httpClient)
         {
             var albumDirectory = Path.Combine(exportDirectory, "Photos", "ScrapBook", SafeFileName(item.Album.Name));
             Directory.CreateDirectory(albumDirectory);
+            Logger.Debug("Ensured ScrapBook export directory exists: {AlbumDirectory}", albumDirectory);
             await DownloadPhotoAsync(item.Photo, albumDirectory, session, token);
-            progress?.Report(new OperationProgress("Exporting ScrapBook photos…", Interlocked.Increment(ref completed), selectedPhotos.Count));
+            var current = Interlocked.Increment(ref completed);
+            Logger.Debug("Exported ScrapBook photo {PhotoUri}; completed {CompletedCount} of {TotalCount}", item.Photo.OriginalUri, current, selectedPhotos.Count);
+            progress?.Report(new OperationProgress("Exporting ScrapBook photos…", current, selectedPhotos.Count));
         });
+
+        Logger.Information("ScrapBook photo export to {ExportDirectory} completed", exportDirectory);
     }
 
     private async Task<string> GetPageAsync(Uri url, LiveJournalSession session, CancellationToken cancellationToken)
     {
+        Logger.Debug("Requesting ScrapBook page {PageUrl}", url);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.TryAddWithoutValidation("Cookie", $"ljsession={session.SessionId}");
+        AddSessionCookie(request, session);
         using var response = await httpClient.SendAsync(request, cancellationToken);
+        Logger.Debug("ScrapBook page {PageUrl} returned HTTP {StatusCode}", url, (int)response.StatusCode);
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsStringAsync(cancellationToken);
+        var html = await response.Content.ReadAsStringAsync(cancellationToken);
+        Logger.Debug("ScrapBook page {PageUrl} returned {ContentLength} characters", url, html.Length);
+        return html;
     }
 
     private async Task DownloadPhotoAsync(ScrapbookPhoto photo, string directory, LiveJournalSession session, CancellationToken cancellationToken)
     {
+        Logger.Debug("Downloading ScrapBook photo {PhotoUri}", photo.OriginalUri);
         using var request = new HttpRequestMessage(HttpMethod.Get, photo.OriginalUri);
-        request.Headers.TryAddWithoutValidation("Cookie", $"ljsession={session.SessionId}");
+        AddSessionCookie(request, session);
         using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        Logger.Debug("ScrapBook photo {PhotoUri} returned HTTP {StatusCode}", photo.OriginalUri, (int)response.StatusCode);
         response.EnsureSuccessStatusCode();
 
         var mediaType = response.Content.Headers.ContentType?.MediaType;
@@ -115,9 +136,11 @@ public sealed class ScrapbookClient(HttpClient httpClient)
 
         var fileName = SafeFileName(Path.GetFileNameWithoutExtension(photo.FileName));
         var path = Path.Combine(directory, $"{fileName}{extension}");
+        Logger.Debug("Writing ScrapBook photo {PhotoUri} to {DestinationPath}", photo.OriginalUri, path);
         await using var target = File.Create(path);
         await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
         await source.CopyToAsync(target, cancellationToken);
+        Logger.Information("Saved ScrapBook photo to {DestinationPath}", path);
     }
 
     private static List<(string Name, Uri Url)> ExtractAlbumLinks(string html, Uri baseUri)
@@ -149,6 +172,14 @@ public sealed class ScrapbookClient(HttpClient httpClient)
     }
 
     private static Uri? ToUri(string value, Uri baseUri) => Uri.TryCreate(baseUri, WebUtility.HtmlDecode(value), out var uri) ? uri : null;
+
+    private static void AddSessionCookie(HttpRequestMessage request, LiveJournalSession session)
+    {
+        if (!string.IsNullOrWhiteSpace(session.SessionId))
+        {
+            request.Headers.TryAddWithoutValidation("Cookie", $"ljsession={session.SessionId}");
+        }
+    }
 
     private static bool IsLikelyPhoto(Uri uri) =>
         uri.Host.EndsWith("livejournal.com", StringComparison.OrdinalIgnoreCase) &&
